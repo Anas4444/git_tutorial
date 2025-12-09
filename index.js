@@ -7,6 +7,7 @@ function main() {
     console.log(`hi c est from roudayna: ${process.env.SECRET}`);
     console.log("login feature added");
     console.log(`fixing login error`);
+    console.log("production error fixed");
 }
 
 main();
