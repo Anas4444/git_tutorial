@@ -1,0 +1,141 @@
+name: Build Development Environment
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+  packages: write
+  actions: write
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  REPO_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  build_tutorial_app:
+    name: Build Tutorial app
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Get versions and calculate new version
+        id: version
+        run: |
+          SERVICE="tutorial-app"
+          ENV="dev"
+
+          # Get the latest commit message
+          COMMIT_MSG=$(git log --format=%B -n 1 HEAD)
+          echo "Latest commit message: $COMMIT_MSG"
+          
+          # CORRECT: Extract the branch name after the organization name
+          MERGED_BRANCH=$(echo "$COMMIT_MSG" | grep -oP "Merge pull request.*from [^/]+/\K[^ ]+" || echo "")
+          if [ -n "$MERGED_BRANCH" ]; then
+            echo "Detected merged branch: $MERGED_BRANCH"
+            PR_BRANCH="$MERGED_BRANCH"
+          else
+            # Fallback: use the current branch (develop)
+            PR_BRANCH="develop"
+            echo "No merge detected, using current branch: $PR_BRANCH"
+          fi
+          
+          echo "PR Branch: $PR_BRANCH"
+          
+          # Get MINOR and PATCH versions from container images
+          CR_PAT=$(curl -s \
+            -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${{ env.REPO_OWNER }}/$SERVICE-$ENV:pull" \
+            | jq -r '.token')
+
+          RESPONSE=$(curl -s \
+            -H "Authorization: Bearer $CR_PAT" \
+            "https://ghcr.io/v2/${{ env.REPO_OWNER }}/$SERVICE-$ENV/tags/list?n=1000")
+          
+          echo "Raw API response: $RESPONSE"
+
+          # Check if repository exists and extract tags
+          if echo "$RESPONSE" | grep -q "NAME_UNKNOWN"; then
+            echo "Container repository doesn't exist yet, no previous tags"
+            CONTAINER_TAGS=""
+          else
+            # CORRECT jq parsing for GHCR API - FIXED LINE
+            CONTAINER_TAGS=$(echo "$RESPONSE" | jq -r '.tags[]?' 2>/dev/null || echo "")
+          fi
+
+          CLEAN_CONTAINER_TAGS=$(echo "$CONTAINER_TAGS" | sed 's/^v//')
+          LATEST_CONTAINER_TAG=$(echo "$CLEAN_CONTAINER_TAGS" | sort -V | tail -n 1)
+          
+          if [ -z "$LATEST_CONTAINER_TAG" ]; then
+            echo "No container tags found, starting with 0.0.0"
+            MAJOR="0"
+            MINOR="0"
+            PATCH="0"
+          else
+            echo "Latest container tag: $LATEST_CONTAINER_TAG"
+            MAJOR=$(echo $LATEST_CONTAINER_TAG | cut -d. -f1)
+            MINOR=$(echo $LATEST_CONTAINER_TAG | cut -d. -f2)
+            PATCH=$(echo $LATEST_CONTAINER_TAG | cut -d. -f3)
+          fi
+          
+          echo "Current version: $MAJOR.$MINOR.$PATCH"
+          
+          # Determine version increment based on branch type
+          if [[ "$PR_BRANCH" == feature/* ]]; then
+            # Feature branch: increment MINOR version
+            NEW_MINOR=$((MINOR + 1))
+            NEW_PATCH="$PATCH"
+            NEW_VERSION="$MAJOR.$NEW_MINOR.$NEW_PATCH"
+            echo "Feature branch: Incremented MINOR version to $NEW_VERSION"
+          elif [[ "$PR_BRANCH" == bugfix/* ]] || [[ "$PR_BRANCH" == hotfix/* ]]; then
+            # Bugfix/Hotfix branch: increment PATCH version
+            NEW_MINOR="$MINOR"
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="$MAJOR.$NEW_MINOR.$NEW_PATCH"
+            echo "Bugfix/Hotfix branch: Incremented PATCH version to $NEW_VERSION"
+          elif [[ "$PR_BRANCH" == release/* ]]; then
+            VERSION_FROM_BRANCH="${PR_BRANCH#release/}"
+            NEW_VERSION="$VERSION_FROM_BRANCH"
+            echo "Release branch: new version $NEW_VERSION"
+          else
+            # Default: increment PATCH version
+            NEW_MINOR="$MINOR"
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="$MAJOR.$NEW_MINOR.$NEW_PATCH"
+            echo "Default branch: Incremented PATCH version to $NEW_VERSION"
+          fi
+          
+          FINAL_VERSION="v${NEW_VERSION}"
+          
+          echo "Final version: $FINAL_VERSION"
+          
+          echo "NEW_TAG=$FINAL_VERSION" >> $GITHUB_ENV
+        
+      - name: Build and push tutorial app Docker image
+        run: |
+          SERVICE="tutorial-app"
+          ENV="dev"
+          IMAGE_NAME="ghcr.io/${{ env.REPO_OWNER }}/$SERVICE-$ENV:${{ env.NEW_TAG }}"
+          IMAGE_NAME_LATEST="ghcr.io/${{ env.REPO_OWNER }}/$SERVICE-$ENV:latest"
+
+          echo "Building Docker image: $IMAGE_NAME"
+          docker build \
+            -t $IMAGE_NAME \
+            -t $IMAGE_NAME_LATEST \
+            .
+          
+          echo "Pushing Docker image to GHCR"
+          docker push $IMAGE_NAME
+          docker push $IMAGE_NAME_LATEST
