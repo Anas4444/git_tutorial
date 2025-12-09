@@ -9,6 +9,7 @@ function main() {
     console.log(`fixing login error`);
     console.log("production error fixed");
     console.log("feature/logout added");
+    console.log("feature/logout added 2");
 }
 
 main();
