@@ -4,6 +4,7 @@ dotenv.config();
 function main() {
     console.log(`Welcome to the Git flow tutorial! this is a secret: ${process.env.SECRET}`);
     console.log(`hi c est from roudayna: ${process.env.SECRET}`);
+    console.log(`fixing login error`);
 }
 
 main();
